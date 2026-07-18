@@ -1,0 +1,10 @@
+[Unit]
+Description=Pardus Optimizer
+After=systemd-logind.service
+
+[Service]
+ExecStart=/usr/lib/pardushw/pardus-optimizer
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
