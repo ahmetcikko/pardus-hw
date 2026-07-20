@@ -67,7 +67,7 @@ Masaüstü uygulaması hiçbir zaman root ile çalışmaz. "Sistemi Optimize Et"
 
 ### Lisans
 
-Belirlenecek
+GPL-3
 
 ## English
 
@@ -134,4 +134,4 @@ The desktop app never runs as root. The "Optimize System" button writes a single
 
 ### License
 
-TBD
+GPL-3
