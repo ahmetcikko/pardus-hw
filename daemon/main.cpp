@@ -142,6 +142,34 @@ static void optimize_sweep(std::unordered_set<uid_t> &squeezed) {
     write_file("/proc/sys/vm/drop_caches", "3");
     write_file("/proc/sys/vm/compact_memory", "1");
 }
+static std::string proc_cgroup_path(int pid) {
+    std::ifstream f("/proc/" + std::to_string(pid) + "/cgroup");
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("0::", 0) == 0)
+            return line.substr(3);
+    return "";
+}
+static void shrink_process(int pid) {
+    std::string origin = proc_cgroup_path(pid);
+    if (origin.empty())
+        return;
+    std::ifstream statm("/proc/" + std::to_string(pid) + "/statm");
+    std::uint64_t sz = 0, rss = 0;
+    statm >> sz >> rss;
+    rss *= std::uint64_t(sysconf(_SC_PAGESIZE));
+    std::string dir = "/sys/fs/cgroup/pardushw-shrink";
+    mkdir(dir.c_str(), 0755);
+    if (!write_file(dir + "/cgroup.procs", std::to_string(pid)))
+        return;
+    std::uint64_t target = rss / 3;
+    if (target < 8388608ULL)
+        target = 8388608ULL;
+    write_file(dir + "/memory.high", std::to_string(target));
+    usleep(300000);
+    write_file(dir + "/memory.high", "max");
+    write_file("/sys/fs/cgroup" + origin + "/cgroup.procs", std::to_string(pid));
+}
 int main() {
     if (geteuid() != 0)
         return 1;
@@ -173,11 +201,30 @@ int main() {
         if (g_stop)
             break;
         if (r > 0 && (pfd.revents & POLLIN)) {
+            std::string data;
             char buf[256];
-            while (read(fifo_fd, buf, sizeof(buf)) > 0) {
+            ssize_t n;
+            while ((n = read(fifo_fd, buf, sizeof(buf))) > 0)
+                data.append(buf, size_t(n));
+            size_t pos = 0;
+            bool did_optimize = false;
+            while (pos < data.size()) {
+                size_t nl = data.find('\n', pos);
+                std::string cmd = data.substr(
+                    pos, nl == std::string::npos ? std::string::npos : nl - pos);
+                if (cmd.rfind("shrink ", 0) == 0)
+                    shrink_process(std::atoi(cmd.c_str() + 7));
+                else if (!did_optimize)
+                    did_optimize = true;
+                if (nl == std::string::npos)
+                    break;
+                pos = nl + 1;
             }
+            if (did_optimize)
+                optimize_sweep(squeezed);
+        } else {
+            optimize_sweep(squeezed);
         }
-        optimize_sweep(squeezed);
     }
     for (uid_t uid : squeezed)
         restore(uid);

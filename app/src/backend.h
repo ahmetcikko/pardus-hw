@@ -30,6 +30,7 @@ class Backend : public QObject {
     Q_INVOKABLE QVariantList details(const QString &kind);
     Q_INVOKABLE bool killProcess(int pid);
     Q_INVOKABLE bool throttleProcess(int pid);
+    Q_INVOKABLE bool shrinkProcess(int pid);
     Q_INVOKABLE bool revealProcess(int pid);
     Q_INVOKABLE void startOptimize();
     Q_INVOKABLE void setLanguage(const QString &lang);

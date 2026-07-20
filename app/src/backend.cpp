@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <sstream>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -695,17 +696,18 @@ void Backend::setLanguage(const QString &lang) {
     if (m_engine)
         m_engine->retranslate();
 }
+static bool write_trigger(const std::string &line) {
+    int fd = open("/run/pardus-optimizer.trigger", O_WRONLY | O_NONBLOCK);
+    if (fd < 0)
+        return false;
+    bool ok = write(fd, line.c_str(), line.size()) == ssize_t(line.size());
+    close(fd);
+    return ok;
+}
 void Backend::startOptimize() {
     auto mem = read_meminfo();
     m_optbefore = mem["MemFree"];
-    int fd = open("/run/pardus-optimizer.trigger", O_WRONLY | O_NONBLOCK);
-    if (fd < 0) {
-        emit optimizeDone(false, 0);
-        return;
-    }
-    bool ok = write(fd, "1", 1) == 1;
-    close(fd);
-    if (!ok) {
+    if (!write_trigger("optimize\n")) {
         emit optimizeDone(false, 0);
         return;
     }
@@ -718,9 +720,53 @@ void Backend::startOptimize() {
         emit optimizeDone(true, int(freed / 1024));
     });
 }
-bool Backend::killProcess(int pid) { return kill(pid, SIGTERM) == 0; }
+static bool is_system_process(int pid) {
+    struct stat st;
+    std::string base = "/proc/" + std::to_string(pid);
+    if (stat(base.c_str(), &st) == 0 && st.st_uid == 0)
+        return true;
+    std::string cgroup = read_line(base + "/cgroup");
+    if (cgroup.find("/system.slice/") != std::string::npos ||
+        cgroup.find("/init.scope") != std::string::npos)
+        return true;
+    static const std::vector<std::string> critical = {
+        "systemd",      "init",          "dbus-daemon",  "dbus-broker",
+        "gnome-shell",  "kwin_x11",      "kwin_wayland", "plasmashell",
+        "Xorg",         "Xwayland",      "gdm",          "gdm3",
+        "lightdm",      "sddm",          "pipewire",     "pipewire-pulse",
+        "wireplumber",  "NetworkManager", "polkitd",     "systemd-logind"};
+    std::string comm = trim(read_line(base + "/comm"));
+    for (const std::string &name : critical)
+        if (comm == name)
+            return true;
+    return false;
+}
+bool Backend::killProcess(int pid) {
+    if (!is_system_process(pid))
+        return kill(pid, SIGTERM) == 0;
+    std::string pidstr = std::to_string(pid);
+    pid_t child = fork();
+    if (child == 0) {
+        char *args[] = {const_cast<char *>("pkexec"),
+                        const_cast<char *>("kill"),
+                        const_cast<char *>("-TERM"),
+                        const_cast<char *>(pidstr.c_str()), nullptr};
+        execvp("pkexec", args);
+        _exit(-1);
+    }
+    if (child < 0)
+        return false;
+    int status = 0;
+    waitpid(child, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
 bool Backend::throttleProcess(int pid) {
-    return setpriority(PRIO_PROCESS, pid, 19) == 0;
+    bool nice_ok = setpriority(PRIO_PROCESS, pid, 19) == 0;
+    bool shrink_ok = write_trigger("shrink " + std::to_string(pid) + "\n");
+    return nice_ok && shrink_ok;
+}
+bool Backend::shrinkProcess(int pid) {
+    return write_trigger("shrink " + std::to_string(pid) + "\n");
 }
 bool Backend::revealProcess(int pid) {
     char buf[PATH_MAX];
